@@ -1,0 +1,5 @@
+vosk
+pyaudio
+requests
+flet
+pyinstaller
