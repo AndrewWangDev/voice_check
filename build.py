@@ -12,6 +12,16 @@ BUILD_DIR = "build"
 def build():
     print("Building EXE...")
     
+    # 0. Ensure logo.ico is generated from logo.jpg for Windows icon embedding
+    if os.path.exists("logo.jpg"):
+        try:
+            from PIL import Image
+            img = Image.open("logo.jpg")
+            img.save("logo.ico", format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+            print("Successfully prepared logo.ico with multi-resolution icon sizes.")
+        except Exception as e:
+            print(f"Warning: Failed to create logo.ico: {e}")
+
     # 1. Clean previous builds
     if os.path.exists(OUTPUT_DIR):
         try:
@@ -25,8 +35,8 @@ def build():
         except Exception as e:
             print(f"Warning: Failed to clean {BUILD_DIR}: {e}")
     
-    # 2. Run PyInstaller
-    PyInstaller.__main__.run([
+    # PyInstaller arguments
+    pyi_args = [
         MAIN_SCRIPT,
         '--name=%s' % APP_NAME,
         '--onedir',
@@ -42,9 +52,18 @@ def build():
         '--hidden-import=flet',
         # Collect Flet data files (e.g. controls/material/icons.json)
         '--collect-data=flet',
-        # Embed logo asset
+        # Embed logo assets
         '--add-data=logo.jpg;.',
-        # Exclude Tkinter and unused heavy GUI/Scientific packages to prevent pyi_rth__tkinter error
+    ]
+
+    if os.path.exists("logo.ico"):
+        pyi_args.extend([
+            '--icon=logo.ico',
+            '--add-data=logo.ico;.',
+        ])
+
+    # Exclude Tkinter and unused heavy GUI/Scientific packages
+    pyi_args.extend([
         '--exclude-module=tkinter',
         '--exclude-module=_tkinter',
         '--exclude-module=customtkinter',
@@ -58,17 +77,21 @@ def build():
         '--exclude-module=IPython',
         '--exclude-module=jupyter',
     ])
+
+    # 2. Run PyInstaller
+    PyInstaller.__main__.run(pyi_args)
     
     # 3. Handle Assets & Model Copying
     exe_dir = os.path.join(OUTPUT_DIR, APP_NAME)
     
-    # Copy logo if present
-    if os.path.exists("logo.jpg"):
-        try:
-            shutil.copy2("logo.jpg", os.path.join(exe_dir, "logo.jpg"))
-            print("Copied logo.jpg to release folder.")
-        except Exception as e:
-            print(f"Warning: Failed to copy logo.jpg: {e}")
+    # Copy logo files to release directory
+    for logo_name in ["logo.jpg", "logo.ico"]:
+        if os.path.exists(logo_name):
+            try:
+                shutil.copy2(logo_name, os.path.join(exe_dir, logo_name))
+                print(f"Copied {logo_name} to release folder.")
+            except Exception as e:
+                print(f"Warning: Failed to copy {logo_name}: {e}")
 
     model_name = "vosk-model-small-cn-0.22"
     if os.path.exists(model_name):

@@ -37,9 +37,25 @@ def get_center_alignment():
     return None
 
 def get_base_path():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
     if hasattr(sys, "_MEIPASS"):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
+
+def get_asset_path(filename):
+    """Locates resource file in bundled dir or local script dir."""
+    candidates = [
+        os.path.join(get_base_path(), filename),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),
+        filename
+    ]
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, filename))
+    for path in candidates:
+        if os.path.exists(path):
+            return os.path.abspath(path)
+    return None
 
 def get_asset_bytes(filename):
     """Loads asset as raw bytes to ensure reliable embedding."""
@@ -199,6 +215,7 @@ def main(page: ft.Page):
     def configure_window():
         target_width = 720
         target_height = 880
+        ico_path = get_asset_path("logo.ico")
         if hasattr(page, "window") and page.window is not None:
             try:
                 page.window.width = target_width
@@ -207,6 +224,8 @@ def main(page: ft.Page):
                 page.window.min_height = 700
                 page.window.prevent_close = False
                 page.window.on_event = window_event
+                if ico_path:
+                    page.window.icon = ico_path
                 return
             except Exception:
                 pass
@@ -215,6 +234,8 @@ def main(page: ft.Page):
             page.window_height = target_height
             page.window_prevent_close = False
             page.on_window_event = window_event
+            if ico_path and hasattr(page, "window_icon"):
+                page.window_icon = ico_path
         except Exception:
             pass
 
