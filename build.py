@@ -42,6 +42,8 @@ def build():
         '--hidden-import=flet',
         # Collect Flet data files (e.g. controls/material/icons.json)
         '--collect-data=flet',
+        # Embed logo asset
+        '--add-data=logo.jpg;.',
         # Exclude Tkinter and unused heavy GUI/Scientific packages to prevent pyi_rth__tkinter error
         '--exclude-module=tkinter',
         '--exclude-module=_tkinter',
@@ -57,10 +59,18 @@ def build():
         '--exclude-module=jupyter',
     ])
     
-    # 3. Handle Model Copying
+    # 3. Handle Assets & Model Copying
     exe_dir = os.path.join(OUTPUT_DIR, APP_NAME)
-    model_name = "vosk-model-small-cn-0.22"
     
+    # Copy logo if present
+    if os.path.exists("logo.jpg"):
+        try:
+            shutil.copy2("logo.jpg", os.path.join(exe_dir, "logo.jpg"))
+            print("Copied logo.jpg to release folder.")
+        except Exception as e:
+            print(f"Warning: Failed to copy logo.jpg: {e}")
+
+    model_name = "vosk-model-small-cn-0.22"
     if os.path.exists(model_name):
         print(f"Copying model {model_name} to release folder...")
         shutil.copytree(model_name, os.path.join(exe_dir, model_name), dirs_exist_ok=True)

@@ -1,5 +1,6 @@
 import re
 import os
+import sys
 import json
 import threading
 import time
@@ -35,9 +36,24 @@ def get_center_alignment():
         return ft.alignment.center
     return None
 
+def get_base_path():
+    if hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+def get_asset_path(filename):
+    """Locates resource file in bundled dir or local script dir."""
+    base_dir = get_base_path()
+    path = os.path.join(base_dir, filename)
+    if os.path.exists(path):
+        return path
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if os.path.exists(local_path):
+        return local_path
+    return filename
+
 def get_config_path():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, "config.json")
+    return os.path.join(get_base_path(), "config.json")
 
 def load_saved_config():
     path = get_config_path()
@@ -49,7 +65,7 @@ def load_saved_config():
             pass
     return {}
 
-def save_user_config(token, chat_id, proxy, keywords):
+def save_user_config(token, chat_id, proxy, keywords, lang):
     path = get_config_path()
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -57,7 +73,8 @@ def save_user_config(token, chat_id, proxy, keywords):
                 "bot_token": token,
                 "chat_id": chat_id,
                 "proxy": proxy,
-                "keywords": keywords
+                "keywords": keywords,
+                "lang": lang
             }, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -75,8 +92,76 @@ def safe_copy_clipboard(page, text):
         pass
     return False
 
+# Comprehensive Internationalization Dictionary
+I18N = {
+    "zh": {
+        "title": "Voice Alert",
+        "subtitle": "离线语音关键词实时监控预警系统",
+        "lang_btn": "EN",
+        "status_ready": "就绪",
+        "status_initializing": "初始化中...",
+        "status_running": "正在监听语音...",
+        "status_stopped": "已停止",
+        "sys_config": "系统配置",
+        "bot_token_label": "Telegram Bot Token",
+        "bot_token_hint": "粘贴来自 @BotFather 的 Token",
+        "chat_id_label": "Telegram Chat ID",
+        "chat_id_hint": "例如: 123456789 或 @my_channel",
+        "proxy_label": "网络代理 (可选，用于 Telegram 直连)",
+        "proxy_hint": "例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+        "keywords_label": "监控关键词",
+        "keywords_hint": "输入待监控的词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
+        "btn_start": "开始监听",
+        "btn_stop": "停止监听",
+        "terminal_title": "实时监控日志",
+        "log_unit": "条记录",
+        "copy_tooltip": "复制日志",
+        "clear_tooltip": "清空日志",
+        "copied": "已复制到剪贴板!",
+        "err_token_chat": "Error: 请先完整填写 Telegram Bot Token 和 Chat ID。",
+        "err_no_keywords": "Error: 请至少输入一个监控关键词。",
+    },
+    "en": {
+        "title": "Voice Alert",
+        "subtitle": "Real-time Voice Keyword Alert System (Vosk Offline)",
+        "lang_btn": "中",
+        "status_ready": "Ready",
+        "status_initializing": "Initializing...",
+        "status_running": "Listening...",
+        "status_stopped": "Stopped",
+        "sys_config": "Configuration",
+        "bot_token_label": "Telegram Bot Token",
+        "bot_token_hint": "Enter your Telegram Bot Token from @BotFather",
+        "chat_id_label": "Telegram Chat ID",
+        "chat_id_hint": "e.g. 123456789 or @my_channel",
+        "proxy_label": "Network Proxy (Optional, for Telegram access)",
+        "proxy_hint": "e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080",
+        "keywords_label": "Keywords to Monitor",
+        "keywords_hint": "Comma/newline separated keywords (e.g. help, urgent, emergency)",
+        "btn_start": "Start Listening",
+        "btn_stop": "Stop Listening",
+        "terminal_title": "Live Monitor Logs",
+        "log_unit": "entries",
+        "copy_tooltip": "Copy logs",
+        "clear_tooltip": "Clear logs",
+        "copied": "Copied to clipboard!",
+        "err_token_chat": "Error: Telegram Bot Token and Chat ID are required.",
+        "err_no_keywords": "Error: At least one keyword is required.",
+    }
+}
+
 def main(page: ft.Page):
-    page.title = "Voice Alert - 语音实时监控报警系统"
+    saved_cfg = load_saved_config()
+    current_lang = saved_cfg.get("lang", "zh")
+    if current_lang not in I18N:
+        current_lang = "zh"
+
+    def t(key):
+        return I18N[current_lang].get(key, "")
+
+    logo_path = get_asset_path("logo.jpg")
+
+    page.title = f"{t('title')} - {t('subtitle')}"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#111418"
     page.padding = 24
@@ -95,6 +180,8 @@ def main(page: ft.Page):
                 page.window.min_height = 700
                 page.window.prevent_close = True
                 page.window.on_event = window_event
+                if os.path.exists(logo_path):
+                    page.window.icon = logo_path
                 return
             except Exception:
                 pass
@@ -103,31 +190,36 @@ def main(page: ft.Page):
             page.window_height = target_height
             page.window_prevent_close = True
             page.on_window_event = window_event
+            if os.path.exists(logo_path) and hasattr(page, "window_icon"):
+                page.window_icon = logo_path
         except Exception:
             pass
 
-    def close_window():
-        if hasattr(page, "window") and page.window is not None:
-            if hasattr(page.window, "destroy"):
-                try:
+    def perform_clean_exit():
+        """Cleanly stops detection and ensures the application process terminates."""
+        try:
+            if system_holder["instance"]:
+                system_holder["instance"].stop_detection()
+        except Exception:
+            pass
+        try:
+            if hasattr(page, "window") and page.window is not None:
+                page.window.prevent_close = False
+                if hasattr(page.window, "destroy"):
                     page.window.destroy()
-                    return
-                except Exception:
-                    pass
-            elif hasattr(page.window, "close"):
-                try:
+                elif hasattr(page.window, "close"):
                     page.window.close()
-                    return
-                except Exception:
-                    pass
-        if hasattr(page, "window_destroy"):
-            try:
+            elif hasattr(page, "window_destroy"):
                 page.window_destroy()
-            except Exception:
-                pass
+        except Exception:
+            pass
+        # Hard exit fallback after brief buffer to avoid lingering zombie processes
+        threading.Timer(0.2, lambda: os._exit(0)).start()
+
+    # Ensure application terminates completely if connection drops or window is closed
+    page.on_disconnect = lambda _: os._exit(0)
 
     system_holder = {"instance": None}
-    saved_cfg = load_saved_config()
 
     # Log entries buffer
     log_lines = []
@@ -157,7 +249,7 @@ def main(page: ft.Page):
                     selectable=True,
                 )
             )
-        log_counter_text.value = f"{len(log_lines)} 条记录"
+        log_counter_text.value = f"{len(log_lines)} {t('log_unit')}"
         try:
             page.update()
             log_list_view.scroll_to(offset=-1, duration=150)
@@ -172,24 +264,28 @@ def main(page: ft.Page):
 
     def update_status_badge(running, msg):
         lower = msg.lower()
+        display_text = msg
         if running:
             if "running" in lower or "监听" in lower:
                 status_dot.bgcolor = "#06d6a0"
                 status_badge.bgcolor = "#13382c"
                 status_badge.border = make_border("#1d6f54", 1)
                 status_text.color = "#06d6a0"
+                display_text = t("status_running")
             else:
                 status_dot.bgcolor = "#ffd166"
                 status_badge.bgcolor = "#382f17"
                 status_badge.border = make_border("#7a6125", 1)
                 status_text.color = "#ffd166"
+                display_text = t("status_initializing")
         else:
             status_dot.bgcolor = "#8b949e"
             status_badge.bgcolor = "#21262d"
             status_badge.border = make_border("#30363d", 1)
             status_text.color = "#8b949e"
+            display_text = t("status_ready") if "ready" in lower or "就绪" in lower else t("status_stopped")
 
-        status_text.value = msg
+        status_text.value = display_text
         token_input.disabled = running
         chat_id_input.disabled = running
         proxy_input.disabled = running
@@ -201,37 +297,31 @@ def main(page: ft.Page):
         except Exception:
             pass
 
-    # Header components
-    icon_mic = getattr(Icons, "GRAPHIC_EQ_ROUNDED", None) or getattr(Icons, "MIC", None)
-    header_section = ft.Row(
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[
-            ft.Row(
-                spacing=12,
-                controls=[
-                    ft.Container(
-                        content=ft.Icon(icon_mic, size=28, color="#38ef7d"),
-                        bgcolor="#16382b",
-                        border_radius=12,
-                        padding=10,
-                        border=make_border("#246146", 1),
-                    ),
-                    ft.Column(
-                        spacing=2,
-                        controls=[
-                            ft.Text("Voice Alert", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
-                            ft.Text("离线语音关键词实时监控预警系统", size=12, color="#8b949e"),
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    )
+    # Header section with Logo image
+    if os.path.exists(logo_path):
+        brand_logo = ft.Image(
+            src=logo_path,
+            width=46,
+            height=46,
+            fit="cover",
+            border_radius=12,
+        )
+    else:
+        icon_mic = getattr(Icons, "GRAPHIC_EQ_ROUNDED", None) or getattr(Icons, "MIC", None)
+        brand_logo = ft.Container(
+            content=ft.Icon(icon_mic, size=28, color="#38ef7d"),
+            bgcolor="#16382b",
+            border_radius=12,
+            padding=10,
+            border=make_border("#246146", 1),
+        )
+
+    title_text = ft.Text(t("title"), size=20, weight=ft.FontWeight.BOLD, color="#ffffff")
+    subtitle_text = ft.Text(t("subtitle"), size=12, color="#8b949e")
 
     # Status indicator Badge
     status_dot = ft.Container(width=8, height=8, border_radius=4, bgcolor="#8b949e")
-    status_text = ft.Text("就绪", size=12, weight=ft.FontWeight.W_500, color="#8b949e")
+    status_text = ft.Text(t("status_ready"), size=12, weight=ft.FontWeight.W_500, color="#8b949e")
     status_badge = ft.Container(
         content=ft.Row([status_dot, status_text], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
         padding=make_padding(h=12, v=6),
@@ -239,15 +329,100 @@ def main(page: ft.Page):
         bgcolor="#21262d",
         border=make_border("#30363d", 1),
     )
-    header_section.controls.append(status_badge)
+
+    # Language Toggle Button
+    lang_btn_text = ft.Text(t("lang_btn"), size=12, weight=ft.FontWeight.BOLD, color="#58a6ff")
+    
+    def toggle_language(e):
+        nonlocal current_lang
+        current_lang = "en" if current_lang == "zh" else "zh"
+        
+        # Persist language choice
+        save_user_config(
+            (token_input.value or "").strip(),
+            (chat_id_input.value or "").strip(),
+            (proxy_input.value or "").strip(),
+            (keywords_input.value or "").strip(),
+            current_lang
+        )
+        
+        # Update UI texts
+        page.title = f"{t('title')} - {t('subtitle')}"
+        title_text.value = t("title")
+        subtitle_text.value = t("subtitle")
+        lang_btn_text.value = t("lang_btn")
+        
+        # Status text
+        is_running = system_holder["instance"] and system_holder["instance"].running
+        update_status_badge(bool(is_running), t("status_running") if is_running else t("status_ready"))
+        
+        # Form labels & hints
+        config_title_text.value = t("sys_config")
+        token_input.label = t("bot_token_label")
+        token_input.hint_text = t("bot_token_hint")
+        chat_id_input.label = t("chat_id_label")
+        chat_id_input.hint_text = t("chat_id_hint")
+        proxy_input.label = t("proxy_label")
+        proxy_input.hint_text = t("proxy_hint")
+        keywords_input.label = t("keywords_label")
+        keywords_input.hint_text = t("keywords_hint")
+        
+        # Action buttons
+        start_btn_text.value = t("btn_start")
+        stop_btn_text.value = t("btn_stop")
+        
+        # Terminal headers
+        terminal_title_text.value = t("terminal_title")
+        copy_icon_btn.tooltip = t("copy_tooltip")
+        clear_icon_btn.tooltip = t("clear_tooltip")
+        log_counter_text.value = f"{len(log_lines)} {t('log_unit')}"
+        page.update()
+
+    lang_switch_container = ft.Container(
+        content=ft.Row(
+            spacing=4,
+            alignment=ft.MainAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(getattr(Icons, "TRANSLATE_ROUNDED", None) or getattr(Icons, "LANGUAGE", None), size=14, color="#58a6ff"),
+                lang_btn_text
+            ]
+        ),
+        padding=make_padding(h=10, v=6),
+        border_radius=20,
+        bgcolor="#182333",
+        border=make_border("#26456f", 1),
+        on_click=toggle_language,
+        tooltip="切换语言 / Switch Language"
+    )
+
+    header_section = ft.Row(
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Row(
+                spacing=12,
+                controls=[
+                    brand_logo,
+                    ft.Column(
+                        spacing=2,
+                        controls=[title_text, subtitle_text],
+                    ),
+                ],
+            ),
+            ft.Row(
+                spacing=8,
+                controls=[status_badge, lang_switch_container]
+            ),
+        ],
+    )
 
     # Form Fields
     token_input = ft.TextField(
-        label="Telegram Bot Token",
+        label=t("bot_token_label"),
         value=saved_cfg.get("bot_token", ""),
         password=True,
         can_reveal_password=True,
-        hint_text="粘贴来自 @BotFather 的 Token",
+        hint_text=t("bot_token_hint"),
         border_radius=8,
         border_color="#30363d",
         focused_border_color="#11998e",
@@ -256,9 +431,9 @@ def main(page: ft.Page):
     )
 
     chat_id_input = ft.TextField(
-        label="Telegram Chat ID",
+        label=t("chat_id_label"),
         value=saved_cfg.get("chat_id", ""),
-        hint_text="例如: 123456789 或 @my_channel",
+        hint_text=t("chat_id_hint"),
         border_radius=8,
         border_color="#30363d",
         focused_border_color="#11998e",
@@ -267,9 +442,9 @@ def main(page: ft.Page):
     )
 
     proxy_input = ft.TextField(
-        label="网络代理 (可选，用于 Telegram 直连)",
+        label=t("proxy_label"),
         value=saved_cfg.get("proxy", ""),
-        hint_text="例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+        hint_text=t("proxy_hint"),
         border_radius=8,
         border_color="#30363d",
         focused_border_color="#11998e",
@@ -278,9 +453,9 @@ def main(page: ft.Page):
     )
 
     keywords_input = ft.TextField(
-        label="监控关键词",
+        label=t("keywords_label"),
         value=saved_cfg.get("keywords", "立正, 张三"),
-        hint_text="输入待监控的词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
+        hint_text=t("keywords_hint"),
         multiline=True,
         min_lines=2,
         max_lines=3,
@@ -290,6 +465,8 @@ def main(page: ft.Page):
         prefix_icon=getattr(Icons, "TAG_ROUNDED", None) or getattr(Icons, "TAG", None),
         text_size=13,
     )
+
+    config_title_text = ft.Text(t("sys_config"), size=14, weight=ft.FontWeight.W_600, color="#e6edf3")
 
     # Configuration Card
     config_card = ft.Container(
@@ -304,7 +481,7 @@ def main(page: ft.Page):
                     spacing=8,
                     controls=[
                         ft.Icon(getattr(Icons, "TUNE_ROUNDED", None) or getattr(Icons, "SETTINGS", None), size=18, color="#58a6ff"),
-                        ft.Text("系统配置", size=14, weight=ft.FontWeight.W_600, color="#e6edf3"),
+                        config_title_text,
                     ],
                 ),
                 token_input,
@@ -323,20 +500,20 @@ def main(page: ft.Page):
         keywords_val = (keywords_input.value or "").strip()
 
         if not token_val or not chat_val:
-            log_message("Error: 请先完整填写 Telegram Bot Token 和 Chat ID。")
+            log_message(t("err_token_chat"))
             return
 
         raw_keywords = re.split(r"[,，、\n]+", keywords_val)
         keywords = [k.strip() for k in raw_keywords if k.strip()]
 
         if not keywords:
-            log_message("Error: 请至少输入一个监控关键词。")
+            log_message(t("err_no_keywords"))
             return
 
         # Auto save user configuration
-        save_user_config(token_val, chat_val, proxy_val or "", keywords_val)
+        save_user_config(token_val, chat_val, proxy_val or "", keywords_val, current_lang)
 
-        update_status_badge(True, "初始化中...")
+        update_status_badge(True, t("status_initializing"))
 
         system_holder["instance"] = VoiceAlertSystem(
             bot_token=token_val,
@@ -352,16 +529,18 @@ def main(page: ft.Page):
     def stop_click(e):
         if system_holder["instance"]:
             system_holder["instance"].stop_detection()
-        update_status_badge(False, "已停止")
+        update_status_badge(False, t("status_stopped"))
 
     # Main Action Buttons
     play_icon = getattr(Icons, "PLAY_ARROW_ROUNDED", None) or getattr(Icons, "PLAY_ARROW", None)
     stop_icon = getattr(Icons, "STOP_ROUNDED", None) or getattr(Icons, "STOP", None)
 
+    start_btn_text = ft.Text(t("btn_start"), color="#ffffff", size=14, weight=ft.FontWeight.W_600)
+    stop_btn_text = ft.Text(t("btn_stop"), color="#ffffff", size=14, weight=ft.FontWeight.W_600)
+
     start_btn = ft.Container(
         content=ButtonControl(
-            "开始监听",
-            icon=play_icon,
+            content=ft.Row([ft.Icon(play_icon, color="#ffffff", size=18), start_btn_text], alignment=ft.MainAxisAlignment.CENTER),
             on_click=start_click,
             style=ft.ButtonStyle(
                 color="#ffffff",
@@ -375,8 +554,7 @@ def main(page: ft.Page):
 
     stop_btn = ft.Container(
         content=ButtonControl(
-            "停止监听",
-            icon=stop_icon,
+            content=ft.Row([ft.Icon(stop_icon, color="#ffffff", size=18), stop_btn_text], alignment=ft.MainAxisAlignment.CENTER),
             on_click=stop_click,
             disabled=True,
             style=ft.ButtonStyle(
@@ -395,7 +573,7 @@ def main(page: ft.Page):
     )
 
     # Terminal Log Component
-    log_counter_text = ft.Text("0 条记录", size=11, color="#8b949e")
+    log_counter_text = ft.Text(f"0 {t('log_unit')}", size=11, color="#8b949e")
 
     def clear_logs(e):
         log_lines.clear()
@@ -404,11 +582,11 @@ def main(page: ft.Page):
     def copy_logs(e):
         all_text = "\n".join(log_lines)
         safe_copy_clipboard(page, all_text)
-        log_counter_text.value = "已复制到剪贴板!"
+        log_counter_text.value = t("copied")
         page.update()
         def restore():
             time.sleep(2)
-            log_counter_text.value = f"{len(log_lines)} 条记录"
+            log_counter_text.value = f"{len(log_lines)} {t('log_unit')}"
             try:
                 page.update()
             except Exception:
@@ -418,11 +596,16 @@ def main(page: ft.Page):
     copy_icon = getattr(Icons, "CONTENT_COPY_ROUNDED", None) or getattr(Icons, "COPY", None)
     clear_icon = getattr(Icons, "DELETE_SWEEP_OUTLINED", None) or getattr(Icons, "CLEAR", None)
 
+    copy_icon_btn = ft.IconButton(icon=copy_icon, icon_size=16, icon_color="#8b949e", tooltip=t("copy_tooltip"), on_click=copy_logs)
+    clear_icon_btn = ft.IconButton(icon=clear_icon, icon_size=16, icon_color="#8b949e", tooltip=t("clear_tooltip"), on_click=clear_logs)
+
     log_list_view = ft.ListView(
         spacing=4,
         auto_scroll=True,
         height=220,
     )
+
+    terminal_title_text = ft.Text(t("terminal_title"), size=13, weight=ft.FontWeight.W_600, color="#e6edf3")
 
     terminal_header = ft.Row(
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -432,15 +615,15 @@ def main(page: ft.Page):
                 spacing=8,
                 controls=[
                     ft.Icon(getattr(Icons, "TERMINAL_ROUNDED", None) or getattr(Icons, "TERMINAL", None), size=16, color="#58a6ff"),
-                    ft.Text("实时监控日志", size=13, weight=ft.FontWeight.W_600, color="#e6edf3"),
+                    terminal_title_text,
                     log_counter_text,
                 ],
             ),
             ft.Row(
                 spacing=4,
                 controls=[
-                    ft.IconButton(icon=copy_icon, icon_size=16, icon_color="#8b949e", tooltip="复制日志", on_click=copy_logs),
-                    ft.IconButton(icon=clear_icon, icon_size=16, icon_color="#8b949e", tooltip="清空日志", on_click=clear_logs),
+                    copy_icon_btn,
+                    clear_icon_btn,
                 ],
             ),
         ],
@@ -478,13 +661,11 @@ def main(page: ft.Page):
 
     page.add(layout_wrapper)
 
-    # Cleanup on exit
+    # Reliable cleanup and exit on window event
     def window_event(e):
-        event_type = getattr(e, "data", "") or getattr(e, "type", "")
-        if event_type in ("close", "WindowEventType.CLOSE"):
-            if system_holder["instance"]:
-                system_holder["instance"].stop_detection()
-            close_window()
+        event_str = str(getattr(e, "data", "") or getattr(e, "type", "")).lower()
+        if "close" in event_str:
+            perform_clean_exit()
 
     configure_window()
 
