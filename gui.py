@@ -41,16 +41,21 @@ def get_base_path():
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 
-def get_asset_path(filename):
-    """Locates resource file in bundled dir or local script dir."""
-    base_dir = get_base_path()
-    path = os.path.join(base_dir, filename)
-    if os.path.exists(path):
-        return path
-    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
-    if os.path.exists(local_path):
-        return local_path
-    return filename
+def get_asset_bytes(filename):
+    """Loads asset as raw bytes to ensure reliable embedding."""
+    candidates = [
+        os.path.join(get_base_path(), filename),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),
+        filename
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    return f.read()
+            except Exception:
+                pass
+    return None
 
 def get_config_path():
     return os.path.join(get_base_path(), "config.json")
@@ -110,7 +115,7 @@ I18N = {
         "proxy_label": "网络代理 (可选，用于 Telegram 直连)",
         "proxy_hint": "例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
         "keywords_label": "监控关键词",
-        "keywords_hint": "输入待监控的词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
+        "keywords_hint": "输入待监控词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
         "btn_start": "开始监听",
         "btn_stop": "停止监听",
         "terminal_title": "实时监控日志",
@@ -159,8 +164,6 @@ def main(page: ft.Page):
     def t(key):
         return I18N[current_lang].get(key, "")
 
-    logo_path = get_asset_path("logo.jpg")
-
     page.title = f"{t('title')} - {t('subtitle')}"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#111418"
@@ -168,7 +171,7 @@ def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.scroll = ft.ScrollMode.ADAPTIVE
 
-    # Cross-version desktop window configuration helper
+    # Cross-version desktop window configuration (Do NOT prevent close to guarantee instant exit)
     def configure_window():
         target_width = 720
         target_height = 880
@@ -178,20 +181,16 @@ def main(page: ft.Page):
                 page.window.height = target_height
                 page.window.min_width = 540
                 page.window.min_height = 700
-                page.window.prevent_close = True
+                page.window.prevent_close = False
                 page.window.on_event = window_event
-                if os.path.exists(logo_path):
-                    page.window.icon = logo_path
                 return
             except Exception:
                 pass
         try:
             page.window_width = target_width
             page.window_height = target_height
-            page.window_prevent_close = True
+            page.window_prevent_close = False
             page.on_window_event = window_event
-            if os.path.exists(logo_path) and hasattr(page, "window_icon"):
-                page.window_icon = logo_path
         except Exception:
             pass
 
@@ -202,22 +201,10 @@ def main(page: ft.Page):
                 system_holder["instance"].stop_detection()
         except Exception:
             pass
-        try:
-            if hasattr(page, "window") and page.window is not None:
-                page.window.prevent_close = False
-                if hasattr(page.window, "destroy"):
-                    page.window.destroy()
-                elif hasattr(page.window, "close"):
-                    page.window.close()
-            elif hasattr(page, "window_destroy"):
-                page.window_destroy()
-        except Exception:
-            pass
-        # Hard exit fallback after brief buffer to avoid lingering zombie processes
-        threading.Timer(0.2, lambda: os._exit(0)).start()
+        os._exit(0)
 
-    # Ensure application terminates completely if connection drops or window is closed
-    page.on_disconnect = lambda _: os._exit(0)
+    # Clean exit on disconnect (e.g. when user clicks X or window closes)
+    page.on_disconnect = lambda _: perform_clean_exit()
 
     system_holder = {"instance": None}
 
@@ -298,12 +285,12 @@ def main(page: ft.Page):
             pass
 
     # Header section with Logo image
-    if os.path.exists(logo_path):
+    logo_bytes = get_asset_bytes("logo.jpg")
+    if logo_bytes:
         brand_logo = ft.Image(
-            src=logo_path,
+            src=logo_bytes,
             width=46,
             height=46,
-            fit="cover",
             border_radius=12,
         )
     else:
@@ -531,44 +518,41 @@ def main(page: ft.Page):
             system_holder["instance"].stop_detection()
         update_status_badge(False, t("status_stopped"))
 
-    # Main Action Buttons
+    # Main Action Buttons (Explicit dimensions to prevent Flutter unbounded flex exception)
     play_icon = getattr(Icons, "PLAY_ARROW_ROUNDED", None) or getattr(Icons, "PLAY_ARROW", None)
     stop_icon = getattr(Icons, "STOP_ROUNDED", None) or getattr(Icons, "STOP", None)
 
     start_btn_text = ft.Text(t("btn_start"), color="#ffffff", size=14, weight=ft.FontWeight.W_600)
     stop_btn_text = ft.Text(t("btn_stop"), color="#ffffff", size=14, weight=ft.FontWeight.W_600)
 
-    start_btn = ft.Container(
-        content=ButtonControl(
-            content=ft.Row([ft.Icon(play_icon, color="#ffffff", size=18), start_btn_text], alignment=ft.MainAxisAlignment.CENTER),
-            on_click=start_click,
-            style=ft.ButtonStyle(
-                color="#ffffff",
-                bgcolor="#11998e",
-                shape=ft.RoundedRectangleBorder(radius=8),
-                padding=make_padding(h=24, v=16),
-            ),
+    start_btn = ButtonControl(
+        content=ft.Row([ft.Icon(play_icon, color="#ffffff", size=18), start_btn_text], alignment=ft.MainAxisAlignment.CENTER),
+        on_click=start_click,
+        width=190,
+        height=44,
+        style=ft.ButtonStyle(
+            color="#ffffff",
+            bgcolor="#11998e",
+            shape=ft.RoundedRectangleBorder(radius=8),
         ),
-        expand=True,
     )
 
-    stop_btn = ft.Container(
-        content=ButtonControl(
-            content=ft.Row([ft.Icon(stop_icon, color="#ffffff", size=18), stop_btn_text], alignment=ft.MainAxisAlignment.CENTER),
-            on_click=stop_click,
-            disabled=True,
-            style=ft.ButtonStyle(
-                color="#ffffff",
-                bgcolor="#da3633",
-                shape=ft.RoundedRectangleBorder(radius=8),
-                padding=make_padding(h=24, v=16),
-            ),
+    stop_btn = ButtonControl(
+        content=ft.Row([ft.Icon(stop_icon, color="#ffffff", size=18), stop_btn_text], alignment=ft.MainAxisAlignment.CENTER),
+        on_click=stop_click,
+        disabled=True,
+        width=190,
+        height=44,
+        style=ft.ButtonStyle(
+            color="#ffffff",
+            bgcolor="#da3633",
+            shape=ft.RoundedRectangleBorder(radius=8),
         ),
-        expand=True,
     )
 
     actions_row = ft.Row(
-        spacing=16,
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=24,
         controls=[start_btn, stop_btn],
     )
 
@@ -661,7 +645,7 @@ def main(page: ft.Page):
 
     page.add(layout_wrapper)
 
-    # Reliable cleanup and exit on window event
+    # Clean exit on window close event
     def window_event(e):
         event_str = str(getattr(e, "data", "") or getattr(e, "type", "")).lower()
         if "close" in event_str:
@@ -670,7 +654,4 @@ def main(page: ft.Page):
     configure_window()
 
 if __name__ == "__main__":
-    if hasattr(ft, "run"):
-        ft.run(main)
-    else:
-        ft.app(target=main)
+    ft.app(target=main)
