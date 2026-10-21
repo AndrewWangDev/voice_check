@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import flet as ft
-from main import VoiceAlertSystem
+from main import VoiceAlertSystem, check_model_ready, download_model, MODEL_NAME
 
 # Cross-version compatibility aliases for modern Flet (0.25+ / 0.80+ / 1.0) and legacy Flet
 Colors = getattr(ft, "Colors", getattr(ft, "colors", None))
@@ -116,6 +116,18 @@ I18N = {
         "proxy_hint": "例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
         "keywords_label": "监控关键词",
         "keywords_hint": "输入待监控词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
+        "model_section_title": "语音识别离线模型 (Vosk Small CN)",
+        "model_status_ready": "已就绪",
+        "model_status_not_ready": "未就绪 (未下载)",
+        "model_status_downloading": "下载中...",
+        "model_status_unpacking": "正在解压...",
+        "model_hint_ready": "本地模型就绪，已支持即时离线识别。",
+        "model_hint_not_ready": "离线中文模型大小约 43MB。建议提前下载，避免首次监听等待。",
+        "btn_download_model": "下载模型",
+        "btn_redownload_model": "重新下载",
+        "btn_downloading": "正在下载...",
+        "model_download_success": "模型下载解压成功，已就绪！",
+        "model_download_failed": "模型下载失败",
         "btn_start": "开始监听",
         "btn_stop": "停止监听",
         "terminal_title": "实时监控日志",
@@ -143,6 +155,18 @@ I18N = {
         "proxy_hint": "e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080",
         "keywords_label": "Keywords to Monitor",
         "keywords_hint": "Comma/newline separated keywords (e.g. help, urgent, emergency)",
+        "model_section_title": "Offline Speech Model (Vosk Small CN)",
+        "model_status_ready": "Ready",
+        "model_status_not_ready": "Not Ready (Not Downloaded)",
+        "model_status_downloading": "Downloading...",
+        "model_status_unpacking": "Extracting...",
+        "model_hint_ready": "Local model ready. Instant offline voice recognition available.",
+        "model_hint_not_ready": "Offline model is ~43MB. Download in advance for instant detection.",
+        "btn_download_model": "Download Model",
+        "btn_redownload_model": "Re-download",
+        "btn_downloading": "Downloading...",
+        "model_download_success": "Model downloaded and unpacked successfully!",
+        "model_download_failed": "Model download failed",
         "btn_start": "Start Listening",
         "btn_stop": "Stop Listening",
         "terminal_title": "Live Monitor Logs",
@@ -194,8 +218,11 @@ def main(page: ft.Page):
         except Exception:
             pass
 
+    app_is_alive = [True]
+
     def perform_clean_exit():
         """Cleanly stops detection and ensures the application process terminates."""
+        app_is_alive[0] = False
         try:
             if system_holder["instance"]:
                 system_holder["instance"].stop_detection()
@@ -363,6 +390,14 @@ def main(page: ft.Page):
         copy_icon_btn.tooltip = t("copy_tooltip")
         clear_icon_btn.tooltip = t("clear_tooltip")
         log_counter_text.value = f"{len(log_lines)} {t('log_unit')}"
+        
+        # Model card
+        try:
+            model_title_text.value = t("model_section_title")
+            update_model_ui()
+        except Exception:
+            pass
+
         page.update()
 
     lang_switch_container = ft.Container(
@@ -479,6 +514,203 @@ def main(page: ft.Page):
         ),
     )
 
+    # Model Status and Download Section
+    model_icon = getattr(Icons, "MEMORY_ROUNDED", None) or getattr(Icons, "SUBTITLES_ROUNDED", None) or getattr(Icons, "SETTINGS_VOICE", None)
+    model_title_text = ft.Text(t("model_section_title"), size=14, weight=ft.FontWeight.W_600, color="#e6edf3")
+
+    model_status_dot = ft.Container(width=8, height=8, border_radius=4, bgcolor="#f4a261")
+    model_status_text = ft.Text(t("model_status_not_ready"), size=12, weight=ft.FontWeight.W_500, color="#f4a261")
+    model_badge = ft.Container(
+        content=ft.Row([model_status_dot, model_status_text], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+        padding=make_padding(h=10, v=4),
+        border_radius=16,
+        bgcolor="#382f17",
+        border=make_border("#7a6125", 1),
+    )
+
+    model_hint_text = ft.Text(
+        t("model_hint_not_ready"),
+        size=12,
+        color="#8b949e",
+        no_wrap=False,
+    )
+    model_hint_container = ft.Container(
+        width=440,
+        content=model_hint_text,
+    )
+
+    model_progress_bar = ft.ProgressBar(
+        value=0.0,
+        bgcolor="#21262d",
+        color="#11998e",
+        height=5,
+        border_radius=3,
+        visible=False,
+    )
+    model_progress_text = ft.Text("", size=11, color="#8b949e", visible=False)
+
+    download_icon = getattr(Icons, "DOWNLOAD_ROUNDED", None) or getattr(Icons, "DOWNLOAD", None)
+    btn_download_text = ft.Text(t("btn_download_model"), size=12, weight=ft.FontWeight.W_600, color="#ffffff")
+
+    def on_model_download_click(e):
+        start_model_download()
+
+    model_download_btn = ButtonControl(
+        content=ft.Row([ft.Icon(download_icon, size=16, color="#ffffff"), btn_download_text], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+        width=130,
+        height=36,
+        style=ft.ButtonStyle(
+            color="#ffffff",
+            bgcolor="#1f6feb",
+            shape=ft.RoundedRectangleBorder(radius=8),
+        ),
+        on_click=on_model_download_click,
+    )
+
+    is_downloading_model = False
+
+    def update_model_ui(override_status=None, progress_val=None, progress_str=None):
+        nonlocal is_downloading_model
+        if override_status == "downloading":
+            is_downloading_model = True
+            model_status_dot.bgcolor = "#58a6ff"
+            model_badge.bgcolor = "#16273d"
+            model_badge.border = make_border("#1f6feb", 1)
+            model_status_text.color = "#58a6ff"
+            model_status_text.value = t("model_status_downloading")
+            btn_download_text.value = t("btn_downloading")
+            model_download_btn.disabled = True
+            model_progress_bar.visible = True
+            model_progress_text.visible = True
+            if progress_val is not None:
+                model_progress_bar.value = progress_val
+            if progress_str:
+                model_progress_text.value = progress_str
+        elif override_status == "unpacking":
+            model_status_dot.bgcolor = "#a371f7"
+            model_badge.bgcolor = "#2e1e47"
+            model_badge.border = make_border("#a371f7", 1)
+            model_status_text.color = "#a371f7"
+            model_status_text.value = t("model_status_unpacking")
+            btn_download_text.value = t("btn_downloading")
+            model_download_btn.disabled = True
+            model_progress_bar.visible = True
+            model_progress_bar.value = 1.0
+            model_progress_text.value = progress_str or t("model_status_unpacking")
+        else:
+            is_downloading_model = False
+            ready, path, _ = check_model_ready()
+            model_progress_bar.visible = False
+            model_progress_text.visible = False
+            model_download_btn.disabled = False
+            if ready:
+                model_status_dot.bgcolor = "#06d6a0"
+                model_badge.bgcolor = "#13382c"
+                model_badge.border = make_border("#1d6f54", 1)
+                model_status_text.color = "#06d6a0"
+                model_status_text.value = t("model_status_ready")
+                model_hint_text.value = t("model_hint_ready")
+                btn_download_text.value = t("btn_redownload_model")
+                model_download_btn.style = ft.ButtonStyle(
+                    color="#c9d1d9",
+                    bgcolor="#21262d",
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                )
+            else:
+                model_status_dot.bgcolor = "#f4a261"
+                model_badge.bgcolor = "#382f17"
+                model_badge.border = make_border("#7a6125", 1)
+                model_status_text.color = "#f4a261"
+                model_status_text.value = t("model_status_not_ready")
+                model_hint_text.value = t("model_hint_not_ready")
+                btn_download_text.value = t("btn_download_model")
+                model_download_btn.style = ft.ButtonStyle(
+                    color="#ffffff",
+                    bgcolor="#1f6feb",
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                )
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def start_model_download():
+        if is_downloading_model:
+            return
+
+        proxy_val = (proxy_input.value or "").strip() or None
+        log_message(t("model_status_downloading") + (f" (Proxy: {proxy_val})" if proxy_val else ""))
+        update_model_ui("downloading", 0.0, "0%")
+
+        def bg_worker():
+            last_ui_update = 0
+
+            def on_progress(down, total, percent):
+                nonlocal last_ui_update
+                now = time.time()
+                if now - last_ui_update > 0.15 or percent >= 100.0:
+                    last_ui_update = now
+                    down_mb = down / (1024 * 1024)
+                    total_mb = total / (1024 * 1024)
+                    p_str = f"{down_mb:.1f} MB / {total_mb:.1f} MB ({percent:.0f}%)"
+                    if percent >= 100.0:
+                        update_model_ui("unpacking", 1.0, t("model_status_unpacking"))
+                    else:
+                        update_model_ui("downloading", percent / 100.0, p_str)
+
+            success, res = download_model(
+                proxy=proxy_val,
+                on_progress=on_progress,
+                on_log=log_message,
+                is_cancelled=lambda: not app_is_alive[0]
+            )
+
+            if success:
+                log_message(t("model_download_success"))
+            else:
+                log_message(f"{t('model_download_failed')}: {res}")
+
+            update_model_ui()
+
+        threading.Thread(target=bg_worker, daemon=True).start()
+
+    model_card = ft.Container(
+        padding=16,
+        border_radius=12,
+        bgcolor="#181c23",
+        border=make_border("#282f3c", 1),
+        content=ft.Column(
+            spacing=10,
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Icon(model_icon, size=18, color="#a371f7"),
+                                model_title_text,
+                            ],
+                        ),
+                        model_badge,
+                    ],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        model_hint_container,
+                        model_download_btn,
+                    ],
+                ),
+                model_progress_bar,
+                model_progress_text,
+            ],
+        ),
+    )
+
     # Button Event Handlers
     def start_click(e):
         token_val = (token_input.value or "").strip()
@@ -502,13 +734,18 @@ def main(page: ft.Page):
 
         update_status_badge(True, t("status_initializing"))
 
+        def on_system_status(running, msg):
+            update_status_badge(running, msg)
+            if not running or "running" in msg.lower():
+                update_model_ui()
+
         system_holder["instance"] = VoiceAlertSystem(
             bot_token=token_val,
             chat_id=chat_val,
             keywords=keywords,
             proxy=proxy_val,
             on_log=log_message,
-            on_status_change=update_status_badge,
+            on_status_change=on_system_status,
         )
 
         system_holder["instance"].start_detection()
@@ -633,9 +870,10 @@ def main(page: ft.Page):
         width=640,
         alignment=get_center_alignment(),
         content=ft.Column(
-            spacing=20,
+            spacing=16,
             controls=[
                 header_section,
+                model_card,
                 config_card,
                 actions_row,
                 terminal_card,
@@ -644,6 +882,9 @@ def main(page: ft.Page):
     )
 
     page.add(layout_wrapper)
+
+    # Initial query of model readiness status on disk
+    update_model_ui()
 
     # Clean exit on window close event
     def window_event(e):

@@ -32,9 +32,108 @@ CHUNK_SIZE = 4096
 
 def get_base_dir():
     """Returns application base directory, compatible with PyInstaller."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
     if hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
+
+def check_model_ready():
+    """Checks if the Vosk speech recognition model is already downloaded and valid.
+    
+    Returns:
+        tuple[bool, str | None, str]: (is_ready, model_path, status_text)
+    """
+    candidates = [
+        os.path.join(get_base_dir(), MODEL_NAME),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_NAME),
+        os.path.abspath(MODEL_NAME),
+    ]
+    if hasattr(sys, '_MEIPASS'):
+        candidates.append(os.path.join(sys._MEIPASS, MODEL_NAME))
+
+    for path in candidates:
+        if os.path.exists(path) and os.path.isdir(path):
+            files = os.listdir(path)
+            if files:
+                return True, path, f"Ready ({len(files)} files)"
+    return False, None, "Not downloaded"
+
+def download_model(proxy=None, on_progress=None, on_log=None, is_cancelled=None):
+    """Downloads and extracts the Vosk model archive.
+    
+    Args:
+        proxy (str): Optional HTTP/SOCKS proxy.
+        on_progress (callable): callback(downloaded_bytes: int, total_bytes: int, percent: float)
+        on_log (callable): callback(msg: str)
+        is_cancelled (callable): callback() -> bool
+        
+    Returns:
+        tuple[bool, str]: (success, model_path_or_error)
+    """
+    def _log(msg):
+        logging.info(msg)
+        if on_log:
+            try:
+                on_log(msg)
+            except Exception:
+                pass
+
+    base_dir = get_base_dir()
+    zip_path = os.path.join(base_dir, f"{MODEL_NAME}.zip")
+    model_path = os.path.join(base_dir, MODEL_NAME)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+
+    _log(f"Starting model download from {MODEL_URL}...")
+    try:
+        response = requests.get(MODEL_URL, stream=True, timeout=(10, 30), proxies=proxies)
+        response.raise_for_status()
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded = 0
+        last_log_percent = -10
+
+        with open(zip_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=32768):
+                if is_cancelled and is_cancelled():
+                    _log("Model download cancelled.")
+                    return False, "Cancelled"
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    percent = (downloaded / total_size * 100.0) if total_size > 0 else 0.0
+                    if on_progress:
+                        try:
+                            on_progress(downloaded, total_size, percent)
+                        except Exception:
+                            pass
+                    if int(percent) - last_log_percent >= 10:
+                        last_log_percent = int(percent)
+                        mb_down = downloaded / (1024 * 1024)
+                        mb_total = total_size / (1024 * 1024)
+                        _log(f"Downloading model: {mb_down:.1f}MB / {mb_total:.1f}MB ({percent:.1f}%)")
+
+        _log("Download complete. Extracting model files...")
+        if on_progress:
+            try:
+                on_progress(total_size, total_size, 100.0)
+            except Exception:
+                pass
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(base_dir)
+
+        _log(f"Model successfully unpacked to: {model_path}")
+        return True, model_path
+    except Exception as e:
+        err_msg = f"Failed to download or unpack model: {e}"
+        _log(f"Error: {err_msg}")
+        return False, err_msg
+    finally:
+        if os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
 
 class VoiceAlertSystem:
     def __init__(self, bot_token, chat_id, keywords, proxy=None, on_log=None, on_status_change=None):
@@ -67,48 +166,22 @@ class VoiceAlertSystem:
                 logging.error(f"Error in on_log callback: {e}")
 
     def download_and_unpack_model(self):
-        """Downloads the Vosk model and checks if it exists."""
-        base_dir = get_base_dir()
-        model_path = os.path.join(base_dir, MODEL_NAME)
-        
-        # Also check current working directory
-        if os.path.exists(model_path):
+        """Checks if model is ready; if not, downloads and unpacks it."""
+        ready, model_path, _ = check_model_ready()
+        if ready:
             self.log(f"Model found at: {model_path}")
             return model_path
-        if os.path.exists(MODEL_NAME):
-            self.log(f"Model found at: {os.path.abspath(MODEL_NAME)}")
-            return MODEL_NAME
-        
+
         self.log(f"Model not found. Downloading from {MODEL_URL}...")
-        zip_path = os.path.join(base_dir, f"{MODEL_NAME}.zip")
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        
-        try:
-            response = requests.get(MODEL_URL, stream=True, timeout=30, proxies=proxies)
-            response.raise_for_status()
-            
-            with open(zip_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if not self.running:
-                        self.log("Model download cancelled by user.")
-                        return None
-                    f.write(chunk)
-            
-            self.log("Unpacking model...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(base_dir)
-            
+        success, res = download_model(
+            proxy=self.proxy,
+            on_log=self.log,
+            is_cancelled=lambda: not self.running
+        )
+        if success:
             self.log("Model setup complete.")
-            return model_path
-        except Exception as e:
-            self.log(f"Error: Failed to download/unpack model: {e}")
-            return None
-        finally:
-            if os.path.exists(zip_path):
-                try:
-                    os.remove(zip_path)
-                except OSError:
-                    pass
+            return res
+        return None
 
     def load_model(self):
         if self.model:
