@@ -2,12 +2,23 @@ import os
 import sys
 import queue
 import json
-import pyaudio
-import logging
+import time
 import zipfile
-import requests
 import threading
-from vosk import Model, KaldiRecognizer
+import logging
+import requests
+
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
+
+try:
+    from vosk import Model, KaldiRecognizer
+except ImportError:
+    Model = None
+    KaldiRecognizer = None
+
 from notifier import send_telegram_alert
 
 # Configure logging
@@ -19,96 +30,191 @@ MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
 AUDIO_RATE = 16000
 CHUNK_SIZE = 4096
 
+def get_base_dir():
+    """Returns application base directory, compatible with PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
 class VoiceAlertSystem:
-    def __init__(self, bot_token, chat_id, keywords, on_log=None):
+    def __init__(self, bot_token, chat_id, keywords, proxy=None, on_log=None, on_status_change=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self.keywords = keywords
+        # Normalize keywords: strip and lowercase
+        self.keywords = [k.strip().lower() for k in keywords if k.strip()]
+        self.proxy = proxy
         self.on_log = on_log  # Callback function for GUI logging
+        self.on_status_change = on_status_change  # Callback for status change (bool: is_running, str: status_msg)
         self.running = False
         self.thread = None
         self.model = None
+        
+        # Cooldown management: keyword -> last alert timestamp
+        self._last_alert_time = {}
+        self._alert_cooldown = 5.0  # 5-second cooldown per keyword
+        
+        # Asynchronous notification queue & worker
+        self._alert_queue = queue.Queue()
+        self._alert_worker_thread = None
 
     def log(self, message):
-        #Logs to console and GUI callback if available.
+        """Logs to console and GUI callback if available."""
         logging.info(message)
         if self.on_log:
-            self.on_log(message)
+            try:
+                self.on_log(message)
+            except Exception as e:
+                logging.error(f"Error in on_log callback: {e}")
 
     def download_and_unpack_model(self):
-        #Downloads the Vosk model checks if it exists.
+        """Downloads the Vosk model and checks if it exists."""
+        base_dir = get_base_dir()
+        model_path = os.path.join(base_dir, MODEL_NAME)
+        
+        # Also check current working directory
+        if os.path.exists(model_path):
+            self.log(f"Model found at: {model_path}")
+            return model_path
         if os.path.exists(MODEL_NAME):
-            self.log(f"Model '{MODEL_NAME}' found.")
+            self.log(f"Model found at: {os.path.abspath(MODEL_NAME)}")
             return MODEL_NAME
         
-        self.log(f"Model '{MODEL_NAME}' not found. Downloading...")
+        self.log(f"Model not found. Downloading from {MODEL_URL}...")
+        zip_path = os.path.join(base_dir, f"{MODEL_NAME}.zip")
+        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        
         try:
-            response = requests.get(MODEL_URL, stream=True)
+            response = requests.get(MODEL_URL, stream=True, timeout=30, proxies=proxies)
             response.raise_for_status()
             
-            zip_path = f"{MODEL_NAME}.zip"
             with open(zip_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
+                    if not self.running:
+                        self.log("Model download cancelled by user.")
+                        return None
                     f.write(chunk)
             
-            self.log("Unpacking model")
+            self.log("Unpacking model...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(".")
+                zip_ref.extractall(base_dir)
             
-            os.remove(zip_path)
             self.log("Model setup complete.")
-            return MODEL_NAME
+            return model_path
         except Exception as e:
             self.log(f"Error: Failed to download/unpack model: {e}")
             return None
+        finally:
+            if os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except OSError:
+                    pass
 
     def load_model(self):
         if self.model:
             return True
+        
+        if Model is None:
+            self.log("Error: 'vosk' module is not installed. Please run: pip install vosk")
+            return False
         
         model_path = self.download_and_unpack_model()
         if not model_path:
             return False
             
         try:
+            self.log("Loading speech recognition model...")
             self.model = Model(model_path)
+            self.log("Model loaded successfully.")
             return True
         except Exception as e:
             self.log(f"Error: Failed to load model: {e}")
             return False
 
     def start_detection(self):
+        """Starts model loading and detection loop in a dedicated background thread."""
         if self.running:
             self.log("Already running.")
             return
 
-        if not self.load_model():
-            return
-
         self.running = True
-        self.thread = threading.Thread(target=self._detection_loop, daemon=True)
+        self.thread = threading.Thread(target=self._worker_thread, daemon=True)
         self.thread.start()
-        self.log("Detection started.")
+
+    def _worker_thread(self):
+        try:
+            if self.on_status_change:
+                self.on_status_change(True, "Loading model...")
+
+            if not self.load_model():
+                self.running = False
+                if self.on_status_change:
+                    self.on_status_change(False, "Failed to load model")
+                return
+
+            if not self.running:
+                return
+
+            if self.on_status_change:
+                self.on_status_change(True, "Running")
+
+            # Start asynchronous alert worker
+            self._start_alert_worker()
+            self._detection_loop()
+        except Exception as e:
+            self.log(f"Unexpected error in worker thread: {e}")
+        finally:
+            self.running = False
+            if self.on_status_change:
+                self.on_status_change(False, "Stopped")
 
     def stop_detection(self):
-        #Stops the detection loop.
+        """Stops the detection loop and waits for thread cleanup."""
         if not self.running:
             return
         
         self.running = False
         if self.thread:
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=3)
         self.log("Detection stopped.")
 
+    def _start_alert_worker(self):
+        """Launches a dedicated thread for non-blocking Telegram notifications."""
+        def alert_loop():
+            while self.running or not self._alert_queue.empty():
+                try:
+                    msg = self._alert_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+
+                if self.bot_token == "YOUR_BOT_TOKEN":
+                    self.log("Warning: Telegram Token not configured.")
+                else:
+                    success = send_telegram_alert(self.bot_token, self.chat_id, msg, proxy=self.proxy)
+                    if not success:
+                        self.log(f"Failed to deliver alert: {msg}")
+                self._alert_queue.task_done()
+
+        self._alert_worker_thread = threading.Thread(target=alert_loop, daemon=True)
+        self._alert_worker_thread.start()
+
     def _detection_loop(self):
+        if pyaudio is None:
+            self.log("Error: 'pyaudio' module is not installed. Please run: pip install pyaudio")
+            self.running = False
+            return
+
         q = queue.Queue()
 
         def callback(in_data, frame_count, time_info, status):
             if status:
-                logging.warning(status, file=sys.stderr)
+                # Fixed bug: logging.warning does not take 'file' keyword argument
+                logging.warning(f"PyAudio stream status: {status}")
             q.put(bytes(in_data))
             return (None, pyaudio.paContinue)
 
+        p = None
+        stream = None
         try:
             p = pyaudio.PyAudio()
             stream = p.open(format=pyaudio.paInt16,
@@ -118,47 +224,64 @@ class VoiceAlertSystem:
                             frames_per_buffer=CHUNK_SIZE,
                             stream_callback=callback)
             stream.start_stream()
-            self.log("Listening...")
-        except Exception as e:
-            self.log(f"Error: Failed to open audio stream: {e}")
-            self.running = False
-            return
+            self.log("Listening for keywords...")
 
-        rec = KaldiRecognizer(self.model, AUDIO_RATE)
-        
-        while self.running:
+            rec = KaldiRecognizer(self.model, AUDIO_RATE)
+            
+            while self.running:
+                try:
+                    # Non-blocking get with timeout to allow checking self.running
+                    data = q.get(timeout=0.5) 
+                except queue.Empty:
+                    continue
+
+                if rec.AcceptWaveform(data):
+                    result = json.loads(rec.Result())
+                    text = result.get("text", "").replace(" ", "").lower()
+                    self._process_text(text)
+
+            # Process final residual audio buffer
             try:
-                # Non-blocking get with timeout to allow checking self.running
-                data = q.get(timeout=1) 
-            except queue.Empty:
-                continue
-
-            if rec.AcceptWaveform(data):
-                result = json.loads(rec.Result())
-                text = result.get("text", "").replace(" ", "")
-                self._process_text(text)
-            else:
+                final_res = json.loads(rec.FinalResult())
+                final_text = final_res.get("text", "").replace(" ", "").lower()
+                self._process_text(final_text)
+            except Exception:
                 pass
-                # partial = json.loads(rec.PartialResult())
 
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+        except Exception as e:
+            self.log(f"Error in audio stream: {e}")
+        finally:
+            # Resource cleanup in finally block to prevent leak
+            if stream:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
+            if p:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+            self.log("Audio stream closed.")
 
     def _process_text(self, text):
         if not text:
             return
         
+        now = time.time()
         for keyword in self.keywords:
             if keyword in text:
+                # Cooldown check to prevent alert spamming
+                last_time = self._last_alert_time.get(keyword, 0)
+                if now - last_time < self._alert_cooldown:
+                    continue
+                self._last_alert_time[keyword] = now
+                
                 msg = f"Keyword Detected: {keyword}"
                 self.log(msg)
-                # Telegram Token not set.
-                if self.bot_token == "YOUR_BOT_TOKEN":
-                   self.log("Warning: Telegram Token not set.")
-                else:
-                   send_telegram_alert(self.bot_token, self.chat_id, msg)
+                # Enqueue to background alert worker (non-blocking)
+                self._alert_queue.put(msg)
 
 if __name__ == "__main__":
-    # for testing
     print("Use gui.py to run")

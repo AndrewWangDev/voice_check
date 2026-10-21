@@ -1,5 +1,5 @@
-vosk
-pyaudio
-requests
-flet
-pyinstaller
+vosk>=0.3.45
+pyaudio>=0.2.11
+requests>=2.28.0
+flet>=0.20.0
+pyinstaller>=5.0.0

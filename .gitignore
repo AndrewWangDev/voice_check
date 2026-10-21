@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+release/
+*.spec
+*.manifest
+
+# PyInstaller
+*.exe
+
+# Vosk models and archives
+vosk-model-*/
+*.zip
+
+# Virtual environments
+.venv/
+venv/
+env/
