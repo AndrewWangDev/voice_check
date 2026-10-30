@@ -18,6 +18,22 @@ try:
 except ImportError:
     flet_desktop = None
 
+def is_valid_flet_view_dir(path):
+    """Checks whether the directory contains a platform-valid Flet client executable or bundle."""
+    if not path or not os.path.isdir(path):
+        return False
+    if sys.platform == "win32":
+        return os.path.isfile(os.path.join(path, "flet.exe"))
+    elif sys.platform == "darwin":
+        if os.path.isfile(os.path.join(path, "flet")):
+            return True
+        for name in os.listdir(path):
+            if name.endswith(".app"):
+                return True
+        return False
+    else:  # Linux / Unix
+        return os.path.isfile(os.path.join(path, "flet"))
+
 # Configure Flet Desktop client path for standalone bundled distribution
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
@@ -26,7 +42,7 @@ if getattr(sys, "frozen", False):
         os.path.join(exe_dir, "flet_view"),
         os.path.join(getattr(sys, "_MEIPASS", ""), "flet_view"),
     ]:
-        if cand and os.path.isfile(os.path.join(cand, "flet.exe")):
+        if is_valid_flet_view_dir(cand):
             os.environ["FLET_VIEW_PATH"] = os.path.abspath(cand)
             break
 

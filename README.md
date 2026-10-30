@@ -21,7 +21,7 @@ A real-time voice monitoring application that listens for specific keywords and 
 
 ## 📋 Prerequisites
 
-- Python 3.8 or higher.
+- Python 3.10 or higher.
 - A Telegram Bot Token and Chat ID (for receiving alerts).
 - A working microphone.
 

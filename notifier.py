@@ -20,11 +20,18 @@ def get_session():
         _session.mount("http://", adapter)
     return _session
 
-def sanitize_telegram_error(text: str) -> str:
+def sanitize_telegram_error(text: str, token: str = None) -> str:
     """Masks bot token in error messages and URLs to prevent credential leakage."""
     if not text:
         return ""
-    return re.sub(r'bot[0-9]+:[a-zA-Z0-9_-]+', 'bot***REDACTED***', str(text))
+    res = str(text)
+    # 1. Direct match replacement for specific token provided
+    if token and str(token) in res:
+        res = res.replace(str(token), "***REDACTED***")
+    # 2. General regex replacement for Telegram bot token formats in URLs or logs
+    # Handles single or repeated 'bot' prefixes (e.g. /bot123456:xxx or /botbot123456:xxx)
+    res = re.sub(r'(?:bot)+[0-9]+:[a-zA-Z0-9_-]+', 'bot***REDACTED***', res)
+    return res
 
 def send_telegram_alert(bot_token, chat_id, message, proxy=None):
     """
@@ -52,14 +59,14 @@ def send_telegram_alert(bot_token, chat_id, message, proxy=None):
                 error_desc = response.json().get("description", response.text)
             except Exception:
                 error_desc = response.text
-            clean_desc = sanitize_telegram_error(error_desc)
+            clean_desc = sanitize_telegram_error(error_desc, token=bot_token)
             logging.error(f"Failed to send Telegram notification (Status {response.status_code}): {clean_desc}")
             return False
 
         logging.info(f"Notification sent: {message}")
         return True
     except requests.exceptions.RequestException as e:
-        safe_msg = sanitize_telegram_error(str(e))
+        safe_msg = sanitize_telegram_error(str(e), token=bot_token)
         logging.error(f"Failed to send Telegram notification due to network error: {safe_msg}")
         return False
 

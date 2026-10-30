@@ -32,7 +32,7 @@ AUDIO_RATE = 16000
 CHUNK_SIZE = 4096
 
 def get_base_dir():
-    """Returns application base directory, prioritizing _MEIPASS for PyInstaller."""
+    """Returns application base directory, prioritizing _MEIPASS for PyInstaller read-only bundled assets."""
     if hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
     if getattr(sys, 'frozen', False):
@@ -42,9 +42,14 @@ def get_base_dir():
 def get_data_dir():
     """
     Returns writable directory for persistent models and configs.
+    Ensures persistent storage is never directed into a temporary _MEIPASS folder.
     Falls back to user application data directory if installation path is read-only.
     """
-    base = get_base_dir()
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+
     test_file = os.path.join(base, ".write_test")
     try:
         with open(test_file, "w") as f:

@@ -114,14 +114,26 @@ def build():
     # Ensure standalone flet_view runtime binary exists in _internal\flet_view
     try:
         import flet_desktop
+        import sys
         from pathlib import Path
         client_dir = flet_desktop.ensure_client_cached()
         flet_client_src = Path(client_dir) / "flet"
-        if flet_client_src.exists() and (flet_client_src / "flet.exe").exists():
+        has_client = False
+        if flet_client_src.exists():
+            if sys.platform == "win32":
+                has_client = (flet_client_src / "flet.exe").exists()
+            elif sys.platform == "darwin":
+                has_client = (flet_client_src / "flet").exists() or any(flet_client_src.glob("*.app"))
+            else:  # Linux / Unix
+                has_client = (flet_client_src / "flet").exists()
+
+        if has_client:
             flet_view_dst = os.path.join(internal_dir, "flet_view")
             print(f"Bundling standalone Flet View client into {flet_view_dst}...")
             shutil.copytree(str(flet_client_src), flet_view_dst, dirs_exist_ok=True)
             print("Successfully bundled Flet View client.")
+        else:
+            print(f"Warning: Flet View executable not found in {flet_client_src}")
     except Exception as e:
         print(f"Warning: Failed to bundle flet_view client: {e}")
     
