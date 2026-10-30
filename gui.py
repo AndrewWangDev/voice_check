@@ -951,5 +951,11 @@ def main(page: ft.Page):
 
     configure_window()
 
+def launch_app():
+    if hasattr(ft, "run"):
+        ft.run(main)
+    elif hasattr(ft, "app"):
+        ft.app(target=main)
+
 if __name__ == "__main__":
-    ft.app(target=main)
+    launch_app()
