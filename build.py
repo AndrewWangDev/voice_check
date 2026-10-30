@@ -52,6 +52,8 @@ def build():
         '--hidden-import=flet',
         # Collect Flet data files (e.g. controls/material/icons.json)
         '--collect-data=flet',
+        # Collect all vosk C-extensions, DLLs and data
+        '--collect-all=vosk',
         # Embed logo assets
         f'--add-data=logo.jpg{os.pathsep}.',
     ]
@@ -83,6 +85,17 @@ def build():
     
     # 3. Handle Assets & Model Copying
     exe_dir = os.path.join(OUTPUT_DIR, APP_NAME)
+    internal_dir = os.path.join(exe_dir, "_internal")
+
+    # Ensure vosk package with all DLLs exists in _internal\vosk for open_dll()
+    try:
+        import vosk
+        vosk_src = os.path.dirname(vosk.__file__)
+        vosk_dst = os.path.join(internal_dir, "vosk")
+        print(f"Ensuring full vosk binaries in {vosk_dst}...")
+        shutil.copytree(vosk_src, vosk_dst, dirs_exist_ok=True)
+    except Exception as e:
+        print(f"Warning: Failed to copy vosk directory: {e}")
     
     # Copy logo files to release directory
     for logo_name in ["logo.jpg", "logo.ico"]:
