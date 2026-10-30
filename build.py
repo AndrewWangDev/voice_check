@@ -53,13 +53,13 @@ def build():
         # Collect Flet data files (e.g. controls/material/icons.json)
         '--collect-data=flet',
         # Embed logo assets
-        '--add-data=logo.jpg;.',
+        f'--add-data=logo.jpg{os.pathsep}.',
     ]
 
     if os.path.exists("logo.ico"):
         pyi_args.extend([
             '--icon=logo.ico',
-            '--add-data=logo.ico;.',
+            f'--add-data=logo.ico{os.pathsep}.',
         ])
 
     # Exclude Tkinter and unused heavy GUI/Scientific packages

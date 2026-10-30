@@ -20,6 +20,10 @@ release/
 vosk-model-*/
 *.zip
 
+# Local configuration & sensitive credentials
+config.json
+*_config.json
+
 # Virtual environments
 .venv/
 venv/

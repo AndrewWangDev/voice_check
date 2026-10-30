@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import flet as ft
-from main import VoiceAlertSystem, check_model_ready, download_model, MODEL_NAME
+from main import VoiceAlertSystem, check_model_ready, download_model, MODEL_NAME, get_data_dir
 
 # Cross-version compatibility aliases for modern Flet (0.25+ / 0.80+ / 1.0) and legacy Flet
 Colors = getattr(ft, "Colors", getattr(ft, "colors", None))
@@ -37,10 +37,10 @@ def get_center_alignment():
     return None
 
 def get_base_path():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
     if hasattr(sys, "_MEIPASS"):
         return sys._MEIPASS
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 def get_asset_path(filename):
@@ -74,7 +74,7 @@ def get_asset_bytes(filename):
     return None
 
 def get_config_path():
-    return os.path.join(get_base_path(), "config.json")
+    return os.path.join(get_data_dir(), "config.json")
 
 def load_saved_config():
     path = get_config_path()
@@ -131,7 +131,7 @@ I18N = {
         "proxy_label": "网络代理 (可选，用于 Telegram 直连)",
         "proxy_hint": "例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
         "keywords_label": "监控关键词",
-        "keywords_hint": "输入待监控词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命）",
+        "keywords_hint": "输入待监控中文词汇，支持中英文逗号、顿号或换行分隔（如：帮助，救命，开门）",
         "model_section_title": "语音识别离线模型 (Vosk Small CN)",
         "model_status_ready": "已就绪",
         "model_status_not_ready": "未就绪 (未下载)",
@@ -156,7 +156,7 @@ I18N = {
     },
     "en": {
         "title": "Voice Alert",
-        "subtitle": "Real-time Voice Keyword Alert System (Vosk Offline)",
+        "subtitle": "Real-time Voice Keyword Alert System (Vosk Offline CN)",
         "lang_btn": "中",
         "status_ready": "Ready",
         "status_initializing": "Initializing...",
@@ -170,7 +170,7 @@ I18N = {
         "proxy_label": "Network Proxy (Optional, for Telegram access)",
         "proxy_hint": "e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080",
         "keywords_label": "Keywords to Monitor",
-        "keywords_hint": "Comma/newline separated keywords (e.g. help, urgent, emergency)",
+        "keywords_hint": "Offline model is Vosk Small CN. Enter Chinese keywords (e.g. 帮助, 救命, 报警)",
         "model_section_title": "Offline Speech Model (Vosk Small CN)",
         "model_status_ready": "Ready",
         "model_status_not_ready": "Not Ready (Not Downloaded)",
@@ -272,6 +272,31 @@ def main(page: ft.Page):
             return "#f4a261"
         return "#c9d1d9"
 
+    def log_message(message):
+        line = str(message)
+        log_lines.append(line)
+        if len(log_lines) > MAX_LOG_LINES:
+            del log_lines[: len(log_lines) - MAX_LOG_LINES]
+
+        # Incremental DOM update avoiding full O(N^2) recreation
+        text_ctrl = ft.Text(
+            line,
+            size=12,
+            font_family="Consolas, Cascadia Code, monospace",
+            color=get_log_color(line),
+            selectable=True,
+        )
+        log_list_view.controls.append(text_ctrl)
+        if len(log_list_view.controls) > MAX_LOG_LINES:
+            del log_list_view.controls[: len(log_list_view.controls) - MAX_LOG_LINES]
+
+        log_counter_text.value = f"{len(log_list_view.controls)} {t('log_unit')}"
+        try:
+            page.update()
+            log_list_view.scroll_to(offset=-1, duration=100)
+        except Exception:
+            pass
+
     def refresh_log_view():
         log_list_view.controls.clear()
         for line in log_lines:
@@ -287,15 +312,9 @@ def main(page: ft.Page):
         log_counter_text.value = f"{len(log_lines)} {t('log_unit')}"
         try:
             page.update()
-            log_list_view.scroll_to(offset=-1, duration=150)
+            log_list_view.scroll_to(offset=-1, duration=100)
         except Exception:
             pass
-
-    def log_message(message):
-        log_lines.append(str(message))
-        if len(log_lines) > MAX_LOG_LINES:
-            del log_lines[: len(log_lines) - MAX_LOG_LINES]
-        refresh_log_view()
 
     def update_status_badge(running, msg):
         lower = msg.lower()
@@ -772,9 +791,21 @@ def main(page: ft.Page):
         system_holder["instance"].start_detection()
 
     def stop_click(e):
-        if system_holder["instance"]:
-            system_holder["instance"].stop_detection()
-        update_status_badge(False, t("status_stopped"))
+        stop_btn.disabled = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        def bg_stop():
+            try:
+                if system_holder["instance"]:
+                    system_holder["instance"].stop_detection()
+            except Exception:
+                pass
+            update_status_badge(False, t("status_stopped"))
+
+        threading.Thread(target=bg_stop, daemon=True).start()
 
     # Main Action Buttons (Explicit dimensions to prevent Flutter unbounded flex exception)
     play_icon = getattr(Icons, "PLAY_ARROW_ROUNDED", None) or getattr(Icons, "PLAY_ARROW", None)
@@ -819,7 +850,12 @@ def main(page: ft.Page):
 
     def clear_logs(e):
         log_lines.clear()
-        refresh_log_view()
+        log_list_view.controls.clear()
+        log_counter_text.value = f"0 {t('log_unit')}"
+        try:
+            page.update()
+        except Exception:
+            pass
 
     def copy_logs(e):
         all_text = "\n".join(log_lines)

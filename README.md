@@ -4,11 +4,11 @@ A real-time voice monitoring application that listens for specific keywords and 
 
 ## 🚀 Features
 
-- **Real-time Keyword Detection**: continuously listens to microphone input to detect user-defined keywords.
-- **Offline Speech Recognition**: Uses the lightweight and accurate [Vosk](https://alphacephei.com/vosk/) model (automatically downloads the small Chinese model `vosk-model-small-cn-0.22` on first run).
-- **Telegram Integration**: Sends instant notifications to your Telegram chat when a keyword is detected.
-- **User-Friendly GUI**: Built with [Flet](https://flet.dev/), providing a clean and responsive interface for configuration and monitoring.
-- **Log Monitoring**: View real-time logs of system status and detection events directly in the app.
+- **Real-time Keyword Detection**: continuously listens to microphone input to detect user-defined keywords (supports live streaming partial result detection).
+- **Offline Speech Recognition**: Uses the lightweight and accurate [Vosk](https://alphacephei.com/vosk/) model (automatically downloads and validates the small Chinese model `vosk-model-small-cn-0.22`).
+- **Telegram Integration**: Sends instant notifications to your Telegram chat when a keyword is detected, with connection pooling and credential leakage prevention.
+- **User-Friendly GUI**: Built with [Flet](https://flet.dev/), providing a clean, responsive interface, model advance downloader, and Chinese/English bilingual support.
+- **Log Monitoring**: View real-time logs with high-performance incremental rendering directly in the app.
 
 ## 🛠️ Technology Stack
 
@@ -16,7 +16,7 @@ A real-time voice monitoring application that listens for specific keywords and 
 - **[Flet](https://flet.dev/)**: Framework for building the graphical user interface.
 - **[Vosk](https://alphacephei.com/vosk/)**: Offline speech recognition toolkit.
 - **[PyAudio](https://people.csail.mit.edu/hubert/pyaudio/)**: Library for audio input/output.
-- **[Requests](https://requests.readthedocs.io/)**: HTTP library for sending Telegram API requests.
+- **[Requests](https://requests.readthedocs.io/)**: HTTP library for sending Telegram API requests (with SOCKS5 proxy support).
 - **[PyInstaller](https://pyinstaller.org/)**: Tool for packaging the application into a standalone executable.
 
 ## 📋 Prerequisites
@@ -45,24 +45,24 @@ A real-time voice monitoring application that listens for specific keywords and 
 2. **Configure the settings**:
    - **Telegram Bot Token**: Enter the token provided by @BotFather.
    - **Chat ID**: Enter your personal or group Chat ID (you can use bots like @userinfobot to find this).
-   - **Keywords**: Enter the keywords you want to monitor, separated by commas (e.g., `help, urgent, start`).
+   - **Keywords**: Enter the keywords you want to monitor, separated by commas (e.g., `帮助, 救命, 报警`). *Note: The default model is `vosk-model-small-cn-0.22` optimized for Chinese speech.*
 
 3. **Start Monitoring**:
-   - Click the **Start Detection** (开始检测) button.
-   - The application will download the Vosk model (first time only) and start listening.
-   - The status will change to "Running" and logs will appear in the log window.
+   - Click the **Start Detection** (开始监听) button.
+   - The application will check or download the Vosk model and start listening.
+   - The status will change to "Running" and live logs will appear in the log window.
 
 4. **Stop Monitoring**:
-   - Click the **Stop Detection** (结束检测) button to stop listening.
+   - Click the **Stop Detection** (停止监听) button to stop listening.
 
 ## 🔨 Building (Optional)
 
 To create a standalone executable:
 
 ```bash
-pyinstaller VoiceAlert.spec
+python build.py
 ```
-The executable will be generated in the `dist` folder.
+The executable will be generated in the `release/VoiceAlert` folder.
 
 ## 📄 License
 

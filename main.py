@@ -3,6 +3,7 @@ import sys
 import queue
 import json
 import time
+import shutil
 import zipfile
 import threading
 import logging
@@ -31,20 +32,54 @@ AUDIO_RATE = 16000
 CHUNK_SIZE = 4096
 
 def get_base_dir():
-    """Returns application base directory, compatible with PyInstaller."""
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+    """Returns application base directory, prioritizing _MEIPASS for PyInstaller."""
     if hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
+def get_data_dir():
+    """
+    Returns writable directory for persistent models and configs.
+    Falls back to user application data directory if installation path is read-only.
+    """
+    base = get_base_dir()
+    test_file = os.path.join(base, ".write_test")
+    try:
+        with open(test_file, "w") as f:
+            f.write("1")
+        os.remove(test_file)
+        return base
+    except (OSError, PermissionError):
+        pass
+
+    if os.name == 'nt':
+        user_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "VoiceAlert")
+    else:
+        user_dir = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "VoiceAlert")
+    os.makedirs(user_dir, exist_ok=True)
+    return user_dir
+
+def is_valid_vosk_model(model_dir):
+    """Verifies that the essential model files exist."""
+    if not model_dir or not os.path.isdir(model_dir):
+        return False
+    required = [
+        os.path.join(model_dir, "am", "final.mdl"),
+        os.path.join(model_dir, "conf", "model.conf"),
+    ]
+    return all(os.path.exists(p) for p in required)
+
 def check_model_ready():
-    """Checks if the Vosk speech recognition model is already downloaded and valid.
+    """
+    Checks if the Vosk speech recognition model is downloaded and structurally valid.
     
     Returns:
         tuple[bool, str | None, str]: (is_ready, model_path, status_text)
     """
     candidates = [
+        os.path.join(get_data_dir(), MODEL_NAME),
         os.path.join(get_base_dir(), MODEL_NAME),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_NAME),
         os.path.abspath(MODEL_NAME),
@@ -52,15 +87,37 @@ def check_model_ready():
     if hasattr(sys, '_MEIPASS'):
         candidates.append(os.path.join(sys._MEIPASS, MODEL_NAME))
 
-    for path in candidates:
-        if os.path.exists(path) and os.path.isdir(path):
+    # Remove duplicates while preserving order
+    unique_candidates = []
+    for c in candidates:
+        if c not in unique_candidates:
+            unique_candidates.append(c)
+
+    for path in unique_candidates:
+        if is_valid_vosk_model(path):
             files = os.listdir(path)
-            if files:
-                return True, path, f"Ready ({len(files)} files)"
+            return True, path, f"Ready ({len(files)} files)"
+
     return False, None, "Not downloaded"
 
+def safe_extract_zip(zip_file, target_dir):
+    """Safely extracts a ZIP archive preventing directory traversal (Zip Slip)."""
+    resolved_target = os.path.realpath(target_dir)
+    os.makedirs(resolved_target, exist_ok=True)
+
+    with zipfile.ZipFile(zip_file, "r") as zf:
+        if sys.version_info >= (3, 12):
+            zf.extractall(resolved_target, filter='data')
+        else:
+            for member in zf.namelist():
+                member_path = os.path.realpath(os.path.join(resolved_target, member))
+                if not (member_path == resolved_target or member_path.startswith(resolved_target + os.sep)):
+                    raise ValueError(f"Path traversal detected in zip archive: {member}")
+            zf.extractall(resolved_target)
+
 def download_model(proxy=None, on_progress=None, on_log=None, is_cancelled=None):
-    """Downloads and extracts the Vosk model archive.
+    """
+    Downloads and extracts the Vosk model archive safely using a temporary staging directory.
     
     Args:
         proxy (str): Optional HTTP/SOCKS proxy.
@@ -79,9 +136,10 @@ def download_model(proxy=None, on_progress=None, on_log=None, is_cancelled=None)
             except Exception:
                 pass
 
-    base_dir = get_base_dir()
-    zip_path = os.path.join(base_dir, f"{MODEL_NAME}.zip")
-    model_path = os.path.join(base_dir, MODEL_NAME)
+    dest_dir = get_data_dir()
+    zip_path = os.path.join(dest_dir, f"{MODEL_NAME}.zip")
+    temp_extract_dir = os.path.join(dest_dir, f"{MODEL_NAME}_tmp")
+    final_model_path = os.path.join(dest_dir, MODEL_NAME)
     proxies = {"http": proxy, "https": proxy} if proxy else None
 
     _log(f"Starting model download from {MODEL_URL}...")
@@ -112,18 +170,33 @@ def download_model(proxy=None, on_progress=None, on_log=None, is_cancelled=None)
                         mb_total = total_size / (1024 * 1024)
                         _log(f"Downloading model: {mb_down:.1f}MB / {mb_total:.1f}MB ({percent:.1f}%)")
 
-        _log("Download complete. Extracting model files...")
+        _log("Download complete. Extracting model safely...")
         if on_progress:
             try:
                 on_progress(total_size, total_size, 100.0)
             except Exception:
                 pass
 
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(base_dir)
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
-        _log(f"Model successfully unpacked to: {model_path}")
-        return True, model_path
+        safe_extract_zip(zip_path, temp_extract_dir)
+
+        # Locate extracted model dir inside temp extract dir
+        extracted_model_dir = os.path.join(temp_extract_dir, MODEL_NAME)
+        source_dir = extracted_model_dir if os.path.exists(extracted_model_dir) else temp_extract_dir
+
+        if not is_valid_vosk_model(source_dir):
+            raise ValueError("Extracted model failed integrity verification (missing final.mdl or model.conf).")
+
+        # Atomic replacement of target model directory
+        if os.path.exists(final_model_path):
+            shutil.rmtree(final_model_path, ignore_errors=True)
+        shutil.move(source_dir, final_model_path)
+        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+        _log(f"Model successfully verified and installed to: {final_model_path}")
+        return True, final_model_path
     except Exception as e:
         err_msg = f"Failed to download or unpack model: {e}"
         _log(f"Error: {err_msg}")
@@ -134,13 +207,19 @@ def download_model(proxy=None, on_progress=None, on_log=None, is_cancelled=None)
                 os.remove(zip_path)
             except OSError:
                 pass
+        if os.path.exists(temp_extract_dir):
+            try:
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+            except OSError:
+                pass
 
 class VoiceAlertSystem:
     def __init__(self, bot_token, chat_id, keywords, proxy=None, on_log=None, on_status_change=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        # Normalize keywords: strip and lowercase
-        self.keywords = [k.strip().lower() for k in keywords if k.strip()]
+        # Normalize keywords: strip internal and surrounding spaces, and lowercase
+        # Ensures words like "help me" match normalized text "helpme"
+        self.keywords = [k.replace(" ", "").lower() for k in keywords if k.strip()]
         self.proxy = proxy
         self.on_log = on_log  # Callback function for GUI logging
         self.on_status_change = on_status_change  # Callback for status change (bool: is_running, str: status_msg)
@@ -247,7 +326,7 @@ class VoiceAlertSystem:
             return
         
         self.running = False
-        if self.thread:
+        if self.thread and threading.current_thread() != self.thread:
             self.thread.join(timeout=3)
         self.log("Detection stopped.")
 
@@ -277,34 +356,46 @@ class VoiceAlertSystem:
             self.running = False
             return
 
-        q = queue.Queue()
+        audio_queue = queue.Queue()
+        stream_status_flag = [0]
 
+        # PyAudio callback runs in real-time audio thread: Keep it lightweight and non-blocking
         def callback(in_data, frame_count, time_info, status):
             if status:
-                # Fixed bug: logging.warning does not take 'file' keyword argument
-                logging.warning(f"PyAudio stream status: {status}")
-            q.put(bytes(in_data))
+                stream_status_flag[0] = status
+            audio_queue.put(bytes(in_data))
             return (None, pyaudio.paContinue)
 
         p = None
         stream = None
         try:
             p = pyaudio.PyAudio()
-            stream = p.open(format=pyaudio.paInt16,
-                            channels=1,
-                            rate=AUDIO_RATE,
-                            input=True,
-                            frames_per_buffer=CHUNK_SIZE,
-                            stream_callback=callback)
+            try:
+                stream = p.open(format=pyaudio.paInt16,
+                                channels=1,
+                                rate=AUDIO_RATE,
+                                input=True,
+                                frames_per_buffer=CHUNK_SIZE,
+                                stream_callback=callback)
+            except Exception as e:
+                self.log(f"Error opening audio stream at {AUDIO_RATE}Hz: {e}")
+                self.log("Tip: Please check if your microphone is connected and authorized in Windows Privacy Settings.")
+                return
+
             stream.start_stream()
             self.log("Listening for keywords...")
 
             rec = KaldiRecognizer(self.model, AUDIO_RATE)
             
             while self.running:
+                if stream_status_flag[0] != 0:
+                    status_code = stream_status_flag[0]
+                    stream_status_flag[0] = 0
+                    logging.warning(f"PyAudio stream status: {status_code}")
+
                 try:
                     # Non-blocking get with timeout to allow checking self.running
-                    data = q.get(timeout=0.5) 
+                    data = audio_queue.get(timeout=0.5) 
                 except queue.Empty:
                     continue
 
@@ -312,6 +403,14 @@ class VoiceAlertSystem:
                     result = json.loads(rec.Result())
                     text = result.get("text", "").replace(" ", "").lower()
                     self._process_text(text)
+                else:
+                    # Process PartialResult for real-time immediate detection without sentence-end delay
+                    partial_res = json.loads(rec.PartialResult())
+                    partial_text = partial_res.get("partial", "").replace(" ", "").lower()
+                    if partial_text:
+                        # If a keyword is hit in the live stream, fire alert immediately and reset
+                        if self._process_text(partial_text):
+                            rec.Reset()
 
             # Process final residual audio buffer
             try:
@@ -339,9 +438,13 @@ class VoiceAlertSystem:
             self.log("Audio stream closed.")
 
     def _process_text(self, text):
+        """
+        Matches keywords in text. Returns True if a new alert was fired.
+        """
         if not text:
-            return
+            return False
         
+        fired = False
         now = time.time()
         for keyword in self.keywords:
             if keyword in text:
@@ -355,6 +458,9 @@ class VoiceAlertSystem:
                 self.log(msg)
                 # Enqueue to background alert worker (non-blocking)
                 self._alert_queue.put(msg)
+                fired = True
+
+        return fired
 
 if __name__ == "__main__":
     print("Use gui.py to run")
