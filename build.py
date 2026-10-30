@@ -50,8 +50,12 @@ def build():
         '--hidden-import=pyaudio',
         '--hidden-import=requests',
         '--hidden-import=flet',
-        # Collect Flet data files (e.g. controls/material/icons.json)
-        '--collect-data=flet',
+        '--hidden-import=flet_desktop',
+        '--hidden-import=flet_desktop.version',
+        '--hidden-import=flet_desktop.win_taskbar',
+        # Collect Flet packages and data
+        '--collect-all=flet',
+        '--collect-all=flet_desktop',
         # Collect all vosk C-extensions, DLLs and data
         '--collect-all=vosk',
         # Embed logo assets
@@ -96,6 +100,30 @@ def build():
         shutil.copytree(vosk_src, vosk_dst, dirs_exist_ok=True)
     except Exception as e:
         print(f"Warning: Failed to copy vosk directory: {e}")
+
+    # Ensure flet_desktop package exists in _internal\flet_desktop
+    try:
+        import flet_desktop
+        flet_desktop_src = os.path.dirname(flet_desktop.__file__)
+        flet_desktop_dst = os.path.join(internal_dir, "flet_desktop")
+        print(f"Ensuring flet_desktop in {flet_desktop_dst}...")
+        shutil.copytree(flet_desktop_src, flet_desktop_dst, dirs_exist_ok=True)
+    except Exception as e:
+        print(f"Warning: Failed to copy flet_desktop package: {e}")
+
+    # Ensure standalone flet_view runtime binary exists in _internal\flet_view
+    try:
+        import flet_desktop
+        from pathlib import Path
+        client_dir = flet_desktop.ensure_client_cached()
+        flet_client_src = Path(client_dir) / "flet"
+        if flet_client_src.exists() and (flet_client_src / "flet.exe").exists():
+            flet_view_dst = os.path.join(internal_dir, "flet_view")
+            print(f"Bundling standalone Flet View client into {flet_view_dst}...")
+            shutil.copytree(str(flet_client_src), flet_view_dst, dirs_exist_ok=True)
+            print("Successfully bundled Flet View client.")
+    except Exception as e:
+        print(f"Warning: Failed to bundle flet_view client: {e}")
     
     # Copy logo files to release directory
     for logo_name in ["logo.jpg", "logo.ico"]:

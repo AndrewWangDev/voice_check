@@ -1,10 +1,35 @@
+import builtins
+import sys
+
+# PyInstaller frozen environment does not define exit/quit in builtins by default
+if not hasattr(builtins, "exit"):
+    builtins.exit = sys.exit
+if not hasattr(builtins, "quit"):
+    builtins.quit = sys.exit
+
 import re
 import os
-import sys
 import json
 import threading
 import time
 import flet as ft
+try:
+    import flet_desktop
+except ImportError:
+    flet_desktop = None
+
+# Configure Flet Desktop client path for standalone bundled distribution
+if getattr(sys, "frozen", False):
+    exe_dir = os.path.dirname(sys.executable)
+    for cand in [
+        os.path.join(exe_dir, "_internal", "flet_view"),
+        os.path.join(exe_dir, "flet_view"),
+        os.path.join(getattr(sys, "_MEIPASS", ""), "flet_view"),
+    ]:
+        if cand and os.path.isfile(os.path.join(cand, "flet.exe")):
+            os.environ["FLET_VIEW_PATH"] = os.path.abspath(cand)
+            break
+
 from main import VoiceAlertSystem, check_model_ready, download_model, MODEL_NAME, get_data_dir
 
 # Cross-version compatibility aliases for modern Flet (0.25+ / 0.80+ / 1.0) and legacy Flet

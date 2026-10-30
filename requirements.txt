@@ -3,5 +3,6 @@ pyaudio>=0.2.11
 requests[socks]>=2.28.0
 PySocks>=1.7.1
 Pillow>=9.0.0
-flet>=0.20.0
+flet>=1.0.0
+flet-desktop>=1.0.0
 pyinstaller>=5.0.0
